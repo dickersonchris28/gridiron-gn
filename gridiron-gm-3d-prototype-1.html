@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no"><title>Gridiron GM — 3D Field Lab</title>
+<style>
+*{box-sizing:border-box}html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#070c16;color:#fff;font-family:system-ui,Arial}canvas{display:block}#hud{position:absolute;top:0;left:0;right:0;z-index:2;pointer-events:none;background:linear-gradient(#060a12e8,#060a1200);padding:12px max(12px,env(safe-area-inset-right))}#score{display:flex;align-items:center;justify-content:center;gap:18px;font-weight:900;font-size:21px}#score span{color:#ffd43b}#status{text-align:center;color:#d4dfed;font-size:13px;margin-top:5px}#msg{position:absolute;top:24%;width:100%;text-align:center;font-size:clamp(20px,5vw,42px);font-weight:1000;text-shadow:0 3px 10px #000;pointer-events:none;z-index:3}#top{position:absolute;top:12px;right:12px;z-index:5;display:flex;gap:7px}button{border:1px solid #8290a9;background:#101e34df;color:white;border-radius:9px;padding:10px 13px;font-weight:800;touch-action:none}button:active{background:#b88a11}#bottom{position:absolute;bottom:8px;left:50%;transform:translateX(-50%);z-index:4;text-align:center;background:#061020b8;border:1px solid #41506c;border-radius:10px;padding:8px 14px;font-size:12px;max-width:95%;pointer-events:none}#touch{display:none;position:absolute;inset:0;z-index:3;pointer-events:none}#stick{position:absolute;bottom:80px;left:24px;width:130px;height:130px;border-radius:50%;border:2px solid #ffffff70;background:#1a25396b;pointer-events:auto;touch-action:none}#knob{position:absolute;left:41px;top:41px;width:46px;height:46px;border-radius:50%;background:#e9eef9a8;pointer-events:none}#actions{position:absolute;right:12px;bottom:76px;display:grid;grid-template-columns:repeat(2,72px);gap:9px;pointer-events:auto}#actions button{width:72px;height:57px;padding:5px;font-size:12px;background:#173452d9}#actions #snap{background:#b18317}#actions #pass{background:#286c42}#actions #juke{background:#3654a2}#actions #switch{background:#8b3131}#error{display:none;position:absolute;inset:0;z-index:9;background:#08101d;padding:35px;line-height:1.6}#load{position:absolute;inset:0;z-index:8;display:grid;place-items:center;background:#070c16;color:#ffd43b;font-weight:800}
+@media(pointer:coarse){#touch{display:block}#bottom{display:none}}@media(max-width:650px){#top{top:58px}#score{font-size:17px;gap:10px}#hud{padding-top:8px}#status{font-size:11px}}
+</style></head><body><div id="load">LOADING GRIDIRON GM FIELD LAB…</div><div id="error"></div><div id="hud"><div id="score">BUF <span id="home">0</span> — <span id="away">0</span> MIA</div><div id="status">1ST & 10 • BALL ON 25 • Q1</div></div><div id="msg">FIELD LAB</div><div id="top"><button id="cam">CAMERA</button><button id="quality">QUALITY: AUTO</button><button id="reset">RESET</button></div><div id="touch"><div id="stick"><div id="knob"></div></div><div id="actions"><button id="snap">SNAP</button><button id="pass">PASS</button><button id="juke">JUKE</button><button id="switch">SWITCH</button></div></div><div id="bottom">WASD / left stick: move · SPACE / A: snap, throw or tackle · J / X: juke · Q / Y: switch receiver · C: camera · R: reset</div>
+<script type="module">
+import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.165.0/build/three.module.js';
+const $=id=>document.getElementById(id), clamp=(v,a,b)=>Math.max(a,Math.min(b,v)), V=(x,y,z)=>new THREE.Vector3(x,y,z);
+let scene,camera,renderer,clock,field,players=[],ball,carrier,qb,selected,phase='pre',down=1,toGo=10,spot=25,home=0,away=0,playTime=0,camMode=0,quality=1,joy={x:0,y:0},keys={},padButtons=[],last=0,passFlight=null,flashTime=0,driveText='';
+const teamA=0x1749a5,teamB=0xe5e9e9;
+function mesh(geo,mat,parent,x=0,y=0,z=0){let m=new THREE.Mesh(geo,mat);m.position.set(x,y,z);parent.add(m);return m}
+function mat(c,rough=.85){return new THREE.MeshStandardMaterial({color:c,roughness:rough})}
+function line(x1,z1,x2,z2,color=0xffffff,opacity=1){let g=new THREE.BufferGeometry().setFromPoints([V(x1,.022,z1),V(x2,.022,z2)]);let m=new THREE.Line(g,new THREE.LineBasicMaterial({color,transparent:opacity<1,opacity}));scene.add(m)}
+function textPlane(text,x,z,rot=0,scale=2,color='#ffffff'){let c=document.createElement('canvas');c.width=256;c.height=128;let g=c.getContext('2d');g.fillStyle=color;g.font='bold 85px Arial';g.textAlign='center';g.textBaseline='middle';g.fillText(text,128,64);let tex=new THREE.CanvasTexture(c);let m=new THREE.Mesh(new THREE.PlaneGeometry(scale,scale/2),new THREE.MeshBasicMaterial({map:tex,transparent:true,depthWrite:false,side:THREE.DoubleSide}));m.rotation.x=-Math.PI/2;m.rotation.z=rot;m.position.set(x,.035,z);scene.add(m)}
+function init(){
+ scene=new THREE.Scene();scene.background=new THREE.Color(0x789db6);scene.fog=new THREE.Fog(0x789db6,105,225);
+ camera=new THREE.PerspectiveCamera(59,innerWidth/innerHeight,.1,500);
+ renderer=new THREE.WebGLRenderer({antialias:true,powerPreference:'high-performance'});renderer.setPixelRatio(Math.min(devicePixelRatio,1.5));renderer.setSize(innerWidth,innerHeight);renderer.shadowMap.enabled=true;renderer.shadowMap.type=THREE.PCFSoftShadowMap;renderer.outputColorSpace=THREE.SRGBColorSpace;document.body.prepend(renderer.domElement);clock=new THREE.Clock();
+ scene.add(new THREE.HemisphereLight(0xddeeff,0x344329,2.2));let sun=new THREE.DirectionalLight(0xfff0d8,2.5);sun.position.set(-35,65,15);sun.castShadow=true;sun.shadow.mapSize.set(1024,1024);sun.shadow.camera.left=-95;sun.shadow.camera.right=95;sun.shadow.camera.top=95;sun.shadow.camera.bottom=-95;scene.add(sun);
+ const turf=mesh(new THREE.PlaneGeometry(160,110),mat(0x1e653f),scene);turf.rotation.x=-Math.PI/2;turf.receiveShadow=true;
+ for(let i=0;i<12;i++){let band=mesh(new THREE.PlaneGeometry(10,53.3),mat(i%2?0x24754a:0x2a7d50),scene,-55+i*10,.006,0);band.rotation.x=-Math.PI/2;band.receiveShadow=true}
+ for(let x=-50;x<=50;x+=10){line(x,-26.65,x,26.65);if(x>-50&&x<50){textPlane(String(50-Math.abs(x)),x,-18,0,4);textPlane(String(50-Math.abs(x)),x,18,Math.PI,4)}}
+ for(let x=-50;x<=50;x+=1){for(let z of [-7.5,7.5])line(x,z-.45,x,z+.45,0xffffff,.72)}
+ for(let z of [-26.65,26.65])line(-60,z,60,z);
+ for(let [x,c,name] of [[-55,0x103f8e,'BUFFALO'],[55,0x006a75,'MIAMI']]){let m=mesh(new THREE.PlaneGeometry(10,53.3),mat(c),scene,x,.014,0);m.rotation.x=-Math.PI/2;textPlane(name,x,0,Math.PI/2,8)}
+ const outside=mesh(new THREE.PlaneGeometry(230,190),mat(0x2e353a),scene,0,-.11,0);outside.rotation.x=-Math.PI/2;
+ // Stadium stands: lightweight layered rings, no external models required.
+ for(let i=0;i<9;i++){let w=142+i*4.8,d=73+i*4.8,h=.7+i*1.1;let standMat=mat(i%2?0x394657:0x536171);for(let z of [-1,1])mesh(new THREE.BoxGeometry(w,.85,2.3),standMat,scene,0,h,z*(d/2-1));for(let x of [-1,1])mesh(new THREE.BoxGeometry(2.3,.85,d),standMat,scene,x*(w/2-1),h,0)}
+ // Restore visible pitch over the stands' inner opening
+ const pitch=mesh(new THREE.PlaneGeometry(120,53.3),mat(0x257649),scene,0,.028,0);pitch.rotation.x=-Math.PI/2;pitch.receiveShadow=true;
+ for(let i=0;i<12;i++){let x=-55+i*10;let m=mesh(new THREE.PlaneGeometry(10,53.3),mat(i%2?0x257649:0x2d8250),scene,x,.031,0);m.rotation.x=-Math.PI/2}
+ for(let x=-50;x<=50;x+=10){line(x,-26.65,x,26.65);if(x>-50&&x<50){textPlane(String(50-Math.abs(x)),x,-19,0,4);textPlane(String(50-Math.abs(x)),x,19,Math.PI,4)}}
+ for(let x=-50;x<=50;x++){for(let z of [-7.5,7.5])line(x,z-.4,x,z+.4,0xffffff,.65)}
+ for(let [x,c,name] of [[-55,0x103f8e,'BUF'],[55,0x006a75,'MIA']]){let m=mesh(new THREE.PlaneGeometry(10,53.3),mat(c),scene,x,.037,0);m.rotation.x=-Math.PI/2;textPlane(name,x,0,Math.PI/2,7)}
+ for(let z of [-26.65,26.65])line(-60,z,60,z);
+ for(let x of [-60,60]){let post=mat(0xffdf31);mesh(new THREE.CylinderGeometry(.16,.16,8),post,scene,x,4,0);mesh(new THREE.CylinderGeometry(.13,.13,12),post,scene,x,8,0).rotation.z=Math.PI/2;for(let z of [-6,6])mesh(new THREE.CylinderGeometry(.13,.13,6),post,scene,x,11,z)}
+ const bg=mesh(new THREE.SphereGeometry(240,16,12),new THREE.MeshBasicMaterial({color:0x91b1c7,side:THREE.BackSide}),scene);bg.position.y=-18;
+ ball=mesh(new THREE.SphereGeometry(.32,12,8),mat(0x79401d),scene);ball.scale.set(1.5,.65,.7);
+ resetDrive();window.addEventListener('resize',resize);$('load').remove();animate();
+}
+function makePlayer(team,role,x,z,number){
+ let root=new THREE.Group();scene.add(root);root.position.set(x,0,z);
+ let jersey=mat(team===0?teamA:teamB),pants=mat(team===0?0xe9edf6:0x067e85),helmet=mat(team===0?0xeeeeef:0xffffff),skin=mat(0x9d633c),shoe=mat(0x11141a);
+ let torso=mesh(new THREE.BoxGeometry(.85,1.02,.53),jersey,root,0,1.58,0);
+ mesh(new THREE.SphereGeometry(.39,10,8),helmet,root,0,2.47,0);
+ let mask=mesh(new THREE.BoxGeometry(.55,.16,.45),mat(0xb4bec9),root,.17,2.29,0);
+ let arms=[],legs=[];
+ for(let side of [-1,1]){let pivot=new THREE.Group();pivot.position.set(0,1.91,side*.57);root.add(pivot);mesh(new THREE.CapsuleGeometry(.16,.72,3,6),skin,pivot,0,-.47,0);arms.push(pivot);
+ let hip=new THREE.Group();hip.position.set(0,1.11,side*.24);root.add(hip);mesh(new THREE.CapsuleGeometry(.20,.76,3,6),pants,hip,0,-.48,0);mesh(new THREE.BoxGeometry(.4,.2,.46),shoe,hip,.12,-1.04,0);legs.push(hip)}
+ let p={root,torso,arms,legs,team,role,number,x,z,vx:0,vz:0,heading:team===0?0:Math.PI,stun:0,route:0,speed:role==='WR'?10:role==='RB'?9:role==='QB'?7.2:role==='DB'?9.3:role==='LB'?8.1:6.6};players.push(p);return p
+}
+function resetDrive(){home=0;away=0;spot=25;down=1;toGo=10;newPlay();updateHUD()}
+function newPlay(){
+ for(let p of players)scene.remove(p.root);players=[];passFlight=null;playTime=0;phase='pre';flashTime=1.4;
+ let los=spot-50;
+ const offense=[['QB',-4,0],['RB',-7,3.6],['WR',-1,-23],['WR',-1,22],['WR',-2,13],['TE',-.7,-10],['OL',0,-5],['OL',0,-2.5],['OL',0,0],['OL',0,2.5],['OL',0,5]];
+ const defense=[['DB',6,-22],['DB',6,22],['DB',9,-11],['DB',9,11],['LB',4,-6],['LB',4,0],['LB',4,6],['DL',1.3,-5],['DL',1.3,-2],['DL',1.3,2],['DL',1.3,5]];
+ offense.forEach(([r,x,z],i)=>makePlayer(0,r,los+x,z,i+1));defense.forEach(([r,x,z],i)=>makePlayer(1,r,los+x,z,i+21));
+ qb=players[0];carrier=qb;selected=2;ball.position.set(qb.x,1.7,qb.z);message('PRESS SNAP',2);updateHUD();
+}
+function message(t,secs=1.6){$('msg').textContent=t;flashTime=secs}
+function updateHUD(){let dist=toGo>=100?'GOAL':toGo;$('home').textContent=home;$('away').textContent=away;$('status').textContent=`${['1ST','2ND','3RD','4TH'][down-1]} & ${dist} · BALL ON ${spot} · ${phase==='pre'?'SELECT PLAY':'LIVE PLAY'} · ${phase==='live'?playTime.toFixed(1)+'s':'Q1'}`}
+function start(){if(phase==='pre'){phase='live';playTime=0;message('HIKE!',.65)}else if(phase==='live'){if(carrier===qb&&!passFlight)throwBall();else if(carrier)juke()}}
+function throwBall(){
+ let receivers=players.filter(p=>p.team===0&&['WR','TE','RB'].includes(p.role));let target=receivers[selected%receivers.length];if(!target)return;
+ passFlight={x:qb.x,z:qb.z,y:2.2,t:0,duration:clamp(Math.hypot(target.x-qb.x,target.z-qb.z)/27,.45,1.3),target,fromX:qb.x,fromZ:qb.z,toX:target.x+target.vx*.3,toZ:target.z+target.vz*.3};
+ carrier=null;message('PASS IN THE AIR',.7);
+}
+function juke(){if(carrier){carrier.stun=-.35;message('JUKE!',.5)}}
+function endPlay(yards,reason){if(phase!=='live')return;phase='dead';let y=Math.round(yards);spot=clamp(spot+y,1,100);
+ if(spot>=100){home+=7;message('TOUCHDOWN! +7',3);spot=25;down=1;toGo=10}
+ else if(y>=toGo){down=1;toGo=10;message('FIRST DOWN!  '+(y>=0?'+':'')+y+' YDS',2)}
+ else{toGo-=y;down++;message(`${reason} · ${y>=0?'+':''}${y} YDS`,2);if(down>4){spot=25;down=1;toGo=10;message('TURNOVER ON DOWNS',2)}}
+ updateHUD();setTimeout(()=>{if(phase==='dead')newPlay()},2200)}
+function move(p,dx,dz,dt,spd=1){let mag=Math.hypot(dx,dz);if(mag>.01){dx/=Math.max(1,mag);dz/=Math.max(1,mag);p.x=clamp(p.x+dx*p.speed*spd*dt,-59,59);p.z=clamp(p.z+dz*p.speed*spd*dt,-25,25);p.heading=Math.atan2(-dz,dx);p.vx=dx*p.speed*spd;p.vz=dz*p.speed*spd}else{p.vx=0;p.vz=0}p.root.position.set(p.x,0,p.z);p.root.rotation.y=p.heading}
+function input(){let x=(keys.d||keys.ArrowRight?1:0)-(keys.a||keys.ArrowLeft?1:0)+joy.x,z=(keys.s||keys.ArrowDown?1:0)-(keys.w||keys.ArrowUp?1:0)+joy.y;let pads=navigator.getGamepads?.()||[];for(let gp of pads){if(!gp)continue;x+=Math.abs(gp.axes[0])>.14?gp.axes[0]:0;z+=Math.abs(gp.axes[1])>.14?gp.axes[1]:0;let a=gp.buttons[0]?.pressed, b=gp.buttons[2]?.pressed,y=gp.buttons[3]?.pressed;if(a&&!padButtons[0])start();if(b&&!padButtons[2])juke();if(y&&!padButtons[3])selected++;padButtons=[a,false,b,y];break}return{x:clamp(x,-1,1),z:clamp(z,-1,1)}}
+function update(dt){
+ if(flashTime>0){flashTime-=dt;if(flashTime<=0)$('msg').textContent=''}
+ if(phase!=='live')return;playTime+=dt;let i=input(),los=spot-50;
+ if(carrier===qb)move(qb,i.x||.24,i.z,dt,1);
+ else if(carrier)move(carrier,i.x||.55,i.z,dt,1.04);
+ for(let p of players){if(p===carrier)continue;if(p.team===0){
+ if(['WR','TE'].includes(p.role)){let sl=p.role==='TE'?-.12:0;move(p,.76,Math.sin(playTime*1.8+p.number)*.25+sl,dt,.72)}
+ else if(p.role==='RB'&&p!==carrier)move(p,.48,-.22,dt,.65);
+ else if(p.role==='OL'){let defender=players.filter(q=>q.team===1).sort((a,b)=>Math.hypot(a.x-p.x,a.z-p.z)-Math.hypot(b.x-p.x,b.z-p.z))[0];if(defender&&Math.hypot(defender.x-p.x,defender.z-p.z)<2.4)move(p,.12,Math.sign(defender.z-p.z)*.2,dt,.18)}
+ }else{let target=carrier||passFlight?.target||qb;let dx=target.x-p.x,dz=target.z-p.z;let factor=p.role==='DL'?.7:p.role==='LB'?.76:.82;move(p,dx,dz,dt,factor);if(carrier&&Math.hypot(dx,dz)<1.05){endPlay(carrier.x-los,'TACKLED');break}}}
+ if(passFlight){let f=passFlight;f.t+=dt;let t=clamp(f.t/f.duration,0,1);ball.position.set(THREE.MathUtils.lerp(f.fromX,f.toX,t),2+Math.sin(Math.PI*t)*4,THREE.MathUtils.lerp(f.fromZ,f.toZ,t));ball.rotation.z+=dt*16;
+ if(t>=1){let nearest=players.filter(p=>p.team===1).some(p=>Math.hypot(p.x-f.toX,p.z-f.toZ)<1.6);let catchable=Math.hypot(f.target.x-f.toX,f.target.z-f.toZ)<2.3;if(nearest&&Math.random()<.38){passFlight=null;endPlay(0,'PASS BROKEN UP');message('INCOMPLETE PASS',2)}
+ else if(catchable){carrier=f.target;passFlight=null;message('CAUGHT!',.8)}
+ else{passFlight=null;endPlay(0,'INCOMPLETE PASS')}}}
+ else if(carrier)ball.position.set(carrier.x+.38,1.6,carrier.z+.25);
+ if(carrier&&carrier.x>=50)endPlay(100-(spot),'TOUCHDOWN');
+ if(carrier&&carrier.z>=25||carrier&&carrier.z<=-25)endPlay(carrier.x-los,'OUT OF BOUNDS');
+ if(playTime>16)endPlay(carrier?carrier.x-los:0,'WHISTLE');updateHUD();
+}
+function animatePlayers(t,dt){for(let p of players){let moving=Math.hypot(p.vx,p.vz)>.5;let gait=moving?Math.sin(t*11+p.number)*.65:0;p.legs[0].rotation.z=gait;p.legs[1].rotation.z=-gait;p.arms[0].rotation.z=-gait*.65;p.arms[1].rotation.z=gait*.65;p.torso.rotation.z=moving?Math.sin(t*11+p.number)*.04:0}}
+function cameraUpdate(dt){let focus=carrier||passFlight?.target||qb;if(!focus)return;let target;if(camMode===0)target=V(focus.x-17,17,focus.z+24);else if(camMode===1)target=V(focus.x-29,24,focus.z+5);else target=V(focus.x-3,45,focus.z+1);camera.position.lerp(target,Math.min(1,dt*3.8));camera.lookAt(focus.x+9,1,focus.z)}
+function animate(){requestAnimationFrame(animate);let dt=Math.min(clock.getDelta(),.045);update(dt);animatePlayers(clock.elapsedTime,dt);cameraUpdate(dt);renderer.render(scene,camera)}
+function resize(){camera.aspect=innerWidth/innerHeight;camera.updateProjectionMatrix();renderer.setSize(innerWidth,innerHeight)}
+function button(id,fn){$(id).addEventListener('click',fn)}
+button('snap',start);button('pass',()=>{if(phase==='pre')start();else if(carrier===qb)throwBall()});button('juke',juke);button('switch',()=>{selected++;message('TARGET '+(selected%5+1),.6)});button('cam',()=>camMode=(camMode+1)%3);button('reset',resetDrive);
+button('quality',()=>{quality=(quality+1)%3;renderer.setPixelRatio([Math.min(devicePixelRatio,1.5),1,Math.min(devicePixelRatio,2)][quality]);resize();$('quality').textContent=['QUALITY: AUTO','QUALITY: LOW','QUALITY: HIGH'][quality]});
+window.addEventListener('keydown',e=>{keys[e.key]=true;if([' ','ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].includes(e.key))e.preventDefault();if(e.repeat)return;if(e.key===' ')start();if(e.key.toLowerCase()==='j')juke();if(e.key.toLowerCase()==='q')selected++;if(e.key.toLowerCase()==='c')camMode=(camMode+1)%3;if(e.key.toLowerCase()==='r')resetDrive()});window.addEventListener('keyup',e=>keys[e.key]=false);
+let stick=$('stick'),knob=$('knob');function stickMove(e){let b=stick.getBoundingClientRect(),dx=e.clientX-(b.left+b.width/2),dy=e.clientY-(b.top+b.height/2),m=Math.max(1,Math.hypot(dx,dy)),r=Math.min(44,m);joy.x=dx/m*r/44;joy.y=dy/m*r/44;knob.style.transform=`translate(${joy.x*42}px,${joy.y*42}px)`}stick.addEventListener('pointerdown',e=>{stick.setPointerCapture(e.pointerId);stickMove(e)});stick.addEventListener('pointermove',e=>{if(stick.hasPointerCapture(e.pointerId))stickMove(e)});function stickEnd(){joy.x=joy.y=0;knob.style.transform=''}stick.addEventListener('pointerup',stickEnd);stick.addEventListener('pointercancel',stickEnd);
+try{init()}catch(err){$('load').remove();$('error').style.display='block';$('error').textContent='3D could not initialize: '+err.message+' — Use a modern browser with WebGL enabled and an internet connection to load Three.js.';console.error(err)}
+</script></body></html>
